@@ -1,10 +1,10 @@
-
 import streamlit as st
 import requests
 from opencage.geocoder import OpenCageGeocode
 import openrouteservice
 import folium
 from streamlit_folium import folium_static
+import us
 
 # --- Load API Keys from Streamlit secrets ---
 OPENCAGE_KEY = st.secrets["OPENCAGE_KEY"]
@@ -28,11 +28,25 @@ def get_coordinates(address):
     return (result[0]['geometry']['lat'], result[0]['geometry']['lng'])
 
 def get_real_time_gas_price(state_abbr):
+    if not us.states.lookup(state_abbr):
+        return None
     url = f"https://api.eia.gov/v2/petroleum/pri/gnd/data/?api_key={EIA_API_KEY}&frequency=weekly&data[0]=value&facets[state][]={state_abbr}&facets[fuelType][]=Regular&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=1"
     response = requests.get(url)
     if response.status_code == 200:
         data = response.json()
-        return data['response']['data'][0]['value']
+        if 'response' in data and 'data' in data['response'] and len(data['response']['data']) > 0:
+            return data['response']['data'][0]['value']
+    return None
+
+def extract_state_abbr(address):
+    parts = address.split(",")
+    if len(parts) < 2:
+        return None
+    last_part = parts[-2].strip()
+    for word in last_part.split():
+        s = us.states.lookup(word)
+        if s:
+            return s.abbr
     return None
 
 def get_vehicle_mpg(make, model, year):
@@ -57,7 +71,6 @@ def get_vehicle_mpg(make, model, year):
 # --- UI ---
 st.title("Multi-Stop Trip Planner with Real-Time Gas & MPG Lookup")
 
-# Vehicle info
 col1, col2 = st.columns(2)
 with col1:
     make = st.text_input("Vehicle Make", value="Toyota")
@@ -72,13 +85,12 @@ if mpg:
 else:
     mpg = st.number_input("Enter Estimated MPG", min_value=5.0, value=25.0)
 
-# Locations
 start_input = st.text_input("Start Address")
 start_options = nominatim_search(start_input) if start_input else []
 start_address = st.selectbox("Select Start Address", options=start_options) if start_options else None
 
 stops = []
-num_stops = st.number_input("Number of Stops", min_value=0, max_value=5, value=1)
+num_stops = st.number_input("Number of Stops", min_value=0, max_value=5, value=0)
 for i in range(num_stops):
     stop_input = st.text_input(f"Stop {i+1}")
     stop_options = nominatim_search(stop_input) if stop_input else []
@@ -107,14 +119,20 @@ if st.button("Calculate Route") and start_address and end_address:
         duration_min = route['features'][0]['properties']['summary']['duration'] / 60
 
         fuel_used = distance_miles / mpg if mpg else 0
-        state = start_address.split(",")[-2].strip().split(" ")[0]
-        gas_price = get_real_time_gas_price(state.upper())
-        trip_cost = fuel_used * gas_price if gas_price else 0
+
+        state = extract_state_abbr(start_address)
+        gas_price = get_real_time_gas_price(state) if state else None
+
+        if gas_price is None:
+            st.warning(f"Gas price unavailable for state: {state}")
+            trip_cost = 0
+        else:
+            trip_cost = fuel_used * gas_price
 
         st.markdown(f"**Distance:** {distance_km:.2f} km / {distance_miles:.2f} miles")
         st.markdown(f"**Duration:** {duration_min:.1f} minutes")
         st.markdown(f"**Fuel Used:** {fuel_used:.2f} gallons")
-        st.markdown(f"**Gas Price in {state.upper()}:** ${gas_price:.2f}" if gas_price else "Gas price unavailable")
+        st.markdown(f"**Gas Price in {state}:** ${gas_price:.2f}" if gas_price else "Gas price unavailable")
         st.markdown(f"**Estimated Trip Cost:** ${trip_cost:.2f}")
 
         m = folium.Map(location=coords[0], zoom_start=6)
