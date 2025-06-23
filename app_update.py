@@ -8,7 +8,7 @@ from streamlit_folium import folium_static
 # --- API Keys ---
 OPENCAGE_KEY = st.secrets["OPENCAGE_KEY"]
 ORS_API_KEY = st.secrets["ORS_API_KEY"]
-EIA_API_KEY = st.secrets.get("EIA_API_KEY", None)
+EIA_API_KEY = st.secrets.get("EIA_API_KEY")
 
 # --- Initialize Services ---
 geocoder = OpenCageGeocode(OPENCAGE_KEY)
@@ -45,34 +45,52 @@ def extract_state_from_geocode(address):
 
 def get_state_price(state_abbr):
     """
-    Uses EIA legacy API for state-level regular fuel prices.
+    Try to fetch fuel price for the given state. If not available (404),
+    fallback to national average fuel price.
     """
-    if not EIA_API_KEY or state_abbr not in US_STATES:
+    if not EIA_API_KEY:
         return None
+
     try:
-        series_id = f"PET.EMM_EPMRU_PTE_S{state_abbr}_DPG.W"
-        url = f"https://api.eia.gov/series/?api_key={EIA_API_KEY}&series_id={series_id}"
-        res = requests.get(url)
-        st.write(f"EIA API response for {state_abbr}: {res.status_code}")
-        if res.status_code == 200:
-            data = res.json()
-            value = data['series'][0]['data'][0][1]
-            return float(value)
+        # First try state-level fuel price
+        state_series_id = f"PET.EMM_EPMRU_PTE_S{state_abbr}_DPG.W"
+        state_url = f"https://api.eia.gov/series/?api_key={EIA_API_KEY}&series_id={state_series_id}"
+        state_res = requests.get(state_url)
+        st.write(f"EIA API response for {state_abbr}: {state_res.status_code}")
+
+        if state_res.status_code == 200:
+            data = state_res.json()
+            return float(data['series'][0]['data'][0][1])
+
+        # If state price not available, try national average
+        nat_series_id = "PET.EMM_EPMRU_PTE_NUS_DPG.W"
+        nat_url = f"https://api.eia.gov/series/?api_key={EIA_API_KEY}&series_id={nat_series_id}"
+        nat_res = requests.get(nat_url)
+        st.write(f"EIA national avg response: {nat_res.status_code}")
+
+        if nat_res.status_code == 200:
+            data = nat_res.json()
+            return float(data['series'][0]['data'][0][1])
+
     except Exception as e:
-        st.error(f"Error fetching fuel price for {state_abbr}: {e}")
+        st.error(f"Error fetching EIA price: {e}")
+
     return None
 
 def get_average_fuel_price(addresses):
-    states = list({
-        extract_state_from_geocode(addr)
-        for addr in addresses
-        if extract_state_from_geocode(addr)
-    })
+    states = []
+    for addr in addresses:
+        state = extract_state_from_geocode(addr)
+        if state and state not in states:
+            states.append(state)
+
     st.write(f"Detected valid states: {states}")
-    prices = [get_state_price(state) for state in states if state]
+    prices = [get_state_price(state) for state in states]
     prices = [p for p in prices if p is not None]
+
     if prices:
         return sum(prices) / len(prices)
+
     return None
 
 def get_vehicle_mpg(make, model, year):
@@ -88,7 +106,7 @@ def get_vehicle_mpg(make, model, year):
         return None
 
 # --- Streamlit UI ---
-st.title("🚗 US Trip Cost Estimator with State Fuel Prices")
+st.title("🚗 US Trip Cost Estimator (State Fuel Price + MPG + Route Mapping)")
 
 make = st.text_input("Vehicle Make", "Toyota")
 model = st.text_input("Vehicle Model", "Camry")
