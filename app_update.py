@@ -1,5 +1,6 @@
 import streamlit as st
 import requests
+from bs4 import BeautifulSoup
 from opencage.geocoder import OpenCageGeocode
 import openrouteservice
 import folium
@@ -8,116 +9,52 @@ from streamlit_folium import folium_static
 # --- API Keys ---
 OPENCAGE_KEY = st.secrets["OPENCAGE_KEY"]
 ORS_API_KEY = st.secrets["ORS_API_KEY"]
-EIA_API_KEY = st.secrets.get("EIA_API_KEY")
 
 # --- Initialize Services ---
 geocoder = OpenCageGeocode(OPENCAGE_KEY)
 client = openrouteservice.Client(key=ORS_API_KEY)
 
-# --- US State Codes ---
+# --- US State Abbreviations Set ---
 US_STATES = {
     "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS", "KY",
     "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND",
     "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY"
 }
 
-# --- Helper Functions ---
-def nominatim_search(query):
-    params = {"q": query, "format": "json", "addressdetails": 1, "limit": 5}
-    headers = {"User-Agent": "streamlit-trip-planner"}
-    r = requests.get("https://nominatim.openstreetmap.org/search", params=params, headers=headers)
-    return [res["display_name"] for res in r.json()] if r.status_code == 200 else []
-
-def get_coordinates(address):
-    result = geocoder.geocode(address)
-    return result[0]["geometry"]["lat"], result[0]["geometry"]["lng"]
-
-def extract_state_from_geocode(address):
-    try:
-        result = geocoder.geocode(address)
-        components = result[0].get('components', {})
-        state_code = components.get('state_code', '').upper()
-        if state_code in US_STATES:
-            return state_code
-    except Exception as e:
-        st.warning(f"State detection failed for '{address}': {e}")
-    return None
-
-def get_state_price(state_abbr):
-    """
-    Try to fetch fuel price for the given state. If not available (404),
-    fallback to national average fuel price.
-    """
-    if not EIA_API_KEY:
-        return None
-
-    try:
-        # First try state-level fuel price
-        state_series_id = f"PET.EMM_EPMRU_PTE_S{state_abbr}_DPG.W"
-        state_url = f"https://api.eia.gov/series/?api_key={EIA_API_KEY}&series_id={state_series_id}"
-        state_res = requests.get(state_url)
-        st.write(f"EIA API response for {state_abbr}: {state_res.status_code}")
-
-        if state_res.status_code == 200:
-            data = state_res.json()
-            return float(data['series'][0]['data'][0][1])
-
-        # If state price not available, try national average
-        nat_series_id = "PET.EMM_EPMRU_PTE_NUS_DPG.W"
-        nat_url = f"https://api.eia.gov/series/?api_key={EIA_API_KEY}&series_id={nat_series_id}"
-        nat_res = requests.get(nat_url)
-        st.write(f"EIA national avg response: {nat_res.status_code}")
-
-        if nat_res.status_code == 200:
-            data = nat_res.json()
-            return float(data['series'][0]['data'][0][1])
-
-    except Exception as e:
-        st.error(f"Error fetching EIA price: {e}")
-
-    return None
-
-def get_average_fuel_price(addresses):
-    states = []
-    for addr in addresses:
-        state = extract_state_from_geocode(addr)
-        if state and state not in states:
-            states.append(state)
-
-    st.write(f"Detected valid states: {states}")
-    prices = [get_state_price(state) for state in states]
-    prices = [p for p in prices if p is not None]
-
-    if prices:
-        return sum(prices) / len(prices)
-
-    return None
-
-def get_vehicle_mpg(make, model, year):
-    try:
-        import xml.etree.ElementTree as ET
-        res = requests.get(f"https://www.fueleconomy.gov/ws/rest/vehicle/menu/options?year={year}&make={make}&model={model}")
-        root = ET.fromstring(res.content)
-        vehicle_id = root.find(".//value").text
-        mpg_res = requests.get(f"https://www.fueleconomy.gov/ws/rest/vehicle/{vehicle_id}")
-        mpg_root = ET.fromstring(mpg_res.content)
-        return float(mpg_root.findtext("comb08"))
-    except:
-        return None
-
 # --- Streamlit UI ---
-st.title("🚗 US Trip Cost Estimator (State Fuel Price + MPG + Route Mapping)")
+st.title("🚘 Trip Cost Estimator with State Fuel Price (AAA)")
 
+# Vehicle details
 make = st.text_input("Vehicle Make", "Toyota")
 model = st.text_input("Vehicle Model", "Camry")
 year = st.selectbox("Vehicle Year", list(range(2024, 1999, -1)))
 is_ev = st.selectbox("Is this an EV?", ["No", "Yes"])
+
+# Get MPG
+def get_vehicle_mpg(make, model, year):
+    try:
+        import xml.etree.ElementTree as ET
+        r = requests.get(f"https://www.fueleconomy.gov/ws/rest/vehicle/menu/options?year={year}&make={make}&model={model}")
+        root = ET.fromstring(r.content)
+        vehicle_id = root.find(".//value").text
+        mpg_r = requests.get(f"https://www.fueleconomy.gov/ws/rest/vehicle/{vehicle_id}")
+        mpg_root = ET.fromstring(mpg_r.content)
+        return float(mpg_root.findtext("comb08"))
+    except:
+        return None
 
 mpg = None if is_ev == "Yes" else get_vehicle_mpg(make, model, year)
 if mpg:
     st.success(f"Vehicle MPG (estimated): {mpg:.1f}")
 else:
     mpg = st.number_input("Enter MPG manually", min_value=5.0, value=25.0)
+
+# Address inputs
+def nominatim_search(query):
+    params = {"q": query, "format": "json", "addressdetails": 1, "limit": 5}
+    headers = {"User-Agent": "streamlit-app"}
+    r = requests.get("https://nominatim.openstreetmap.org/search", params=params, headers=headers)
+    return [res["display_name"] for res in r.json()] if r.status_code == 200 else []
 
 start_input = st.text_input("Start Location")
 start_opts = nominatim_search(start_input) if start_input else []
@@ -136,6 +73,54 @@ end_input = st.text_input("End Location")
 end_opts = nominatim_search(end_input) if end_input else []
 end = st.selectbox("Select End", options=end_opts) if end_opts else None
 
+# --- Helper Functions ---
+def get_coordinates(address):
+    result = geocoder.geocode(address)
+    return result[0]["geometry"]["lat"], result[0]["geometry"]["lng"]
+
+def extract_state_from_geocode(address):
+    try:
+        result = geocoder.geocode(address)
+        components = result[0].get('components', {})
+        state_code = components.get('state_code', '').upper()
+        if state_code in US_STATES:
+            return state_code
+    except Exception as e:
+        st.warning(f"State detection failed for '{address}': {e}")
+    return None
+
+def fetch_aaa_price(state_abbr):
+    try:
+        url = "https://gasprices.aaa.com/state-gas-price-averages/"
+        response = requests.get(url)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        table = soup.find('table')
+        for row in table.find_all('tr')[1:]:
+            cols = row.find_all('td')
+            state = cols[0].text.strip()
+            price = cols[1].text.strip().replace('$', '')
+            if state_abbr in state:
+                return float(price)
+    except Exception as e:
+        st.warning(f"AAA price fetch failed for {state_abbr}: {e}")
+    return None
+
+def get_average_fuel_price(addresses):
+    states = []
+    for addr in addresses:
+        state = extract_state_from_geocode(addr)
+        if state and state not in states:
+            states.append(state)
+
+    st.write(f"Detected states: {states}")
+    prices = [fetch_aaa_price(state) for state in states]
+    prices = [p for p in prices if p is not None]
+
+    if prices:
+        return sum(prices) / len(prices)
+    return None
+
+# --- Calculate Trip ---
 if st.button("Calculate Trip") and start and end:
     try:
         addresses = [start] + stops + [end]
@@ -160,7 +145,7 @@ if st.button("Calculate Trip") and start and end:
         else:
             avg_price = 3.60
             trip_cost = fuel_used * avg_price
-            st.warning("⚠️ Could not fetch state prices. Using fallback: $3.60/gal")
+            st.warning("⚠️ Could not fetch state fuel prices. Using fallback $3.60/gal")
 
         st.subheader("📊 Trip Summary")
         st.write(f"**Distance:** {dist_km:.1f} km / {dist_mi:.1f} mi")
@@ -169,6 +154,7 @@ if st.button("Calculate Trip") and start and end:
         st.write(f"**Average Fuel Price:** ${avg_price:.2f}/gal")
         st.write(f"**Estimated Trip Cost:** **${trip_cost:.2f}**")
 
+        # Map
         m = folium.Map(location=coords[0], zoom_start=6)
         for addr, coord in zip(addresses, coords):
             folium.Marker(coord, popup=addr).add_to(m)
