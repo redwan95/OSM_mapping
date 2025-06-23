@@ -125,7 +125,16 @@ if st.button("Calculate Route") and start_address and end_address:
 
         fuel_used = distance_miles / mpg if mpg else 0
 
+        # --- Debug output ---
+        st.write(f"Start Address used for state extraction: {start_address}")
+
         state = extract_state_abbr(start_address)
+        st.write(f"Extracted state abbreviation: {state}")
+
+        # Manual fallback if extraction failed
+        if not state:
+            state = st.selectbox("Select State manually (extraction failed):", sorted(list(US_STATES)))
+
         gas_price = get_real_time_gas_price(state) if state else None
 
         if gas_price is None:
