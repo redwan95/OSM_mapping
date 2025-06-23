@@ -5,134 +5,134 @@ import openrouteservice
 import folium
 from streamlit_folium import folium_static
 
-# --- Load API Keys from Streamlit secrets ---
+# Load API Keys
 OPENCAGE_KEY = st.secrets["OPENCAGE_KEY"]
 ORS_API_KEY = st.secrets["ORS_API_KEY"]
+EIA_API_KEY = st.secrets.get("EIA_API_KEY", None)
 
-# --- Initialize clients ---
 geocoder = OpenCageGeocode(OPENCAGE_KEY)
 client = openrouteservice.Client(key=ORS_API_KEY)
 
-# --- Functions ---
+US_STATES = {
+    "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY",
+    "LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND",
+    "OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY"
+}
+
 def nominatim_search(query):
-    url = "https://nominatim.openstreetmap.org/search"
     params = {"q": query, "format": "json", "addressdetails": 1, "limit": 5}
     headers = {"User-Agent": "streamlit-trip-planner"}
-    res = requests.get(url, params=params, headers=headers)
+    res = requests.get("https://nominatim.openstreetmap.org/search", params=params, headers=headers)
     return [r['display_name'] for r in res.json()] if res.status_code == 200 else []
 
-def get_coordinates(address):
-    result = geocoder.geocode(address)
-    return (result[0]['geometry']['lat'], result[0]['geometry']['lng'])
+def get_coords(address):
+    r = geocoder.geocode(address)
+    return (r[0]['geometry']['lat'], r[0]['geometry']['lng'])
 
-def get_average_gas_price_us():
-    # Try AAA API or EIA API or fallback to static average
-    # Here we use a simple free API for demo; replace with your key/service if needed
+def extract_state(address):
+    parts = address.split(",")
+    if len(parts) < 2: return None
+    seg = parts[-2].strip().upper()
+    for s in US_STATES:
+        if s in seg:
+            return s
+    return None
 
-    # Example: Using AAA Public API (replace YOUR_API_KEY if available)
-    # aaa_api_url = "https://gaspricesapi.aaa.com/api/..."
+def get_state_price(state_abbr):
+    if not EIA_API_KEY or state_abbr not in US_STATES:
+        return None
+    url = (
+      f"https://api.eia.gov/v2/petroleum/pri/gnd/data/"
+      f"?api_key={EIA_API_KEY}&frequency=weekly&data[0]=value"
+      f"&facets[state][]={state_abbr}"
+      f"&facets[fuelType][]=Regular"
+      f"&sort[0][column]=period&sort[0][direction]=desc"
+      f"&offset=0&length=1"
+    )
+    res = requests.get(url)
+    if res.status_code == 200:
+        d = res.json()
+        arr = d.get('response', {}).get('data', [])
+        if arr:
+            return float(arr[0]['value'])
+    return None
 
-    # For demonstration, we use EIA weekly average retail gasoline price:
-    eia_api_key = st.secrets.get("EIA_API_KEY", None)
-    if eia_api_key:
-        url = f"https://api.eia.gov/v2/petroleum/pri/gnd/data/?api_key={eia_api_key}&frequency=weekly&data[0]=value&facets[fuelType][]=Regular&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=1"
-        try:
-            response = requests.get(url)
-            if response.status_code == 200:
-                data = response.json()
-                val = data['response']['data'][0]['value']
-                return float(val)
-        except:
-            pass
-
-    # Fallback average price (USD per gallon)
-    return 3.60
+def avg_price_for_route(addresses):
+    prices = []
+    for addr in addresses:
+        st_abbr = extract_state(addr)
+        price = get_state_price(st_abbr) if st_abbr else None
+        if price:
+            prices.append(price)
+    return sum(prices)/len(prices) if prices else None
 
 def get_vehicle_mpg(make, model, year):
     try:
-        url = f"https://www.fueleconomy.gov/ws/rest/vehicle/menu/options?year={year}&make={make}&model={model}"
-        res = requests.get(url)
-        if res.status_code != 200:
-            return None
-        from xml.etree import ElementTree as ET
-        root = ET.fromstring(res.content)
-        vehicle_id = root.find('.//value')
-        if vehicle_id is None:
-            return None
-        vehicle_id = vehicle_id.text
-        mpg_url = f"https://www.fueleconomy.gov/ws/rest/vehicle/{vehicle_id}"
-        mpg_res = requests.get(mpg_url)
-        mpg_root = ET.fromstring(mpg_res.content)
-        return float(mpg_root.findtext("comb08"))
-    except:
-        return None
+        xml = requests.get(f"https://www.fueleconomy.gov/ws/rest/vehicle/menu/options?year={year}&make={make}&model={model}")
+        if xml.status_code != 200: return None
+        import xml.etree.ElementTree as ET
+        vid = ET.fromstring(xml.content).find('.//value')
+        if vid is None: return None
+        vid = vid.text
+        detail = requests.get(f"https://www.fueleconomy.gov/ws/rest/vehicle/{vid}")
+        return float(ET.fromstring(detail.content).findtext("comb08"))
+    except: return None
 
-# --- UI ---
-st.title("Multi-Stop Trip Planner with Average US Gas Price")
+# UI
+st.title("Multi‑Stop Trip Planner with State‑Based Fuel Cost")
 
-col1, col2 = st.columns(2)
-with col1:
-    make = st.text_input("Vehicle Make", value="Toyota")
-    model = st.text_input("Vehicle Model", value="Camry")
-with col2:
-    year = st.selectbox("Vehicle Year", list(range(2024, 1999, -1)))
-    is_ev = st.selectbox("Is it an EV?", ["No", "Yes"])
+make = st.text_input("Vehicle Make", "Toyota")
+model = st.text_input("Vehicle Model", "Camry")
+year = st.selectbox("Year", list(range(2024, 1999, -1)))
+is_ev = st.selectbox("EV?", ["No", "Yes"])
 
-mpg = None if is_ev == "Yes" else get_vehicle_mpg(make, model, year)
+mpg = None if is_ev=="Yes" else get_vehicle_mpg(make, model, year)
 if mpg:
-    st.success(f"Detected MPG: {mpg}")
+    st.success(f"Detected MPG: {mpg:.1f}")
 else:
-    mpg = st.number_input("Enter Estimated MPG", min_value=5.0, value=25.0)
+    mpg = st.number_input("Manual MPG", min_value=5.0, value=25.0)
 
-start_input = st.text_input("Start Address")
-start_options = nominatim_search(start_input) if start_input else []
-start_address = st.selectbox("Select Start Address", options=start_options) if start_options else None
+start_opts = nominatim_search(st.text_input("Start Address"))
+start_addr = st.selectbox("Choose Start", start_opts) if start_opts else None
 
 stops = []
-num_stops = st.number_input("Number of Stops", min_value=0, max_value=5, value=0)
-for i in range(num_stops):
-    stop_input = st.text_input(f"Stop {i+1}")
-    stop_options = nominatim_search(stop_input) if stop_input else []
-    stop_address = st.selectbox(f"Select Stop {i+1}", options=stop_options) if stop_options else None
-    if stop_address:
-        stops.append(stop_address)
+for i in range(st.number_input("Number of Stops", 0, 5, 0)):
+    opts = nominatim_search(st.text_input(f"Stop {i+1}"))
+    addr = st.selectbox(f"Choose Stop {i+1}", opts) if opts else None
+    if addr: stops.append(addr)
 
-end_input = st.text_input("Destination Address")
-end_options = nominatim_search(end_input) if end_input else []
-end_address = st.selectbox("Select Destination Address", options=end_options) if end_options else None
+end_opts = nominatim_search(st.text_input("Destination Address"))
+end_addr = st.selectbox("Choose Destination", end_opts) if end_opts else None
 
-if st.button("Calculate Route") and start_address and end_address:
-    try:
-        all_points = [start_address] + stops + [end_address]
-        coords = [get_coordinates(addr) for addr in all_points]
-        ors_coords = [(lon, lat) for lat, lon in coords]
+if st.button("Calculate") and start_addr and end_addr:
+    addrs = [start_addr] + stops + [end_addr]
+    coords = [get_coords(a) for a in addrs]
+    
+    route = client.directions(
+        coordinates=[(lon, lat) for lat, lon in coords],
+        profile='driving-car',
+        format='geojson'
+    )
+    summary = route['features'][0]['properties']['summary']
+    dist_km = summary['distance']/1000
+    dist_mi = dist_km*0.621371
+    dur_min = summary['duration']/60
 
-        route = client.directions(
-            coordinates=ors_coords,
-            profile='driving-car',
-            format='geojson'
-        )
+    fuel = dist_mi/mpg
+    avg_price = avg_price_for_route(addrs)
+    if not avg_price:
+        st.warning("Could not fetch fuel prices; using fallback $3.60")
+        avg_price = 3.60
+    cost = fuel * avg_price
 
-        distance_km = route['features'][0]['properties']['summary']['distance'] / 1000
-        distance_miles = distance_km * 0.621371
-        duration_min = route['features'][0]['properties']['summary']['duration'] / 60
+    st.markdown(f"**Distance:** {dist_km:.1f} km / {dist_mi:.1f} mi")
+    st.markdown(f"**Duration:** {dur_min:.1f} min")
+    st.markdown(f"**Fuel:** {fuel:.1f} gal")
+    st.markdown(f"**Avg Fuel Price:** ${avg_price:.2f}/gal")
+    st.markdown(f"**Trip Cost:** **${cost:.2f}**")
 
-        fuel_used = distance_miles / mpg if mpg else 0
-
-        avg_gas_price = get_average_gas_price_us()
-        trip_cost = fuel_used * avg_gas_price
-
-        st.markdown(f"**Distance:** {distance_km:.2f} km / {distance_miles:.2f} miles")
-        st.markdown(f"**Duration:** {duration_min:.1f} minutes")
-        st.markdown(f"**Fuel Used:** {fuel_used:.2f} gallons")
-        st.markdown(f"**Average US Gas Price:** ${avg_gas_price:.2f} per gallon")
-        st.markdown(f"**Estimated Trip Cost:** ${trip_cost:.2f}")
-
-        m = folium.Map(location=coords[0], zoom_start=6)
-        for i, coord in enumerate(coords):
-            folium.Marker(coord, popup=all_points[i]).add_to(m)
-        folium.GeoJson(route, name="Route").add_to(m)
-        folium_static(m)
-
-    except Exception as e:
-        st.error(f"Error: {e}")
+    m = folium.Map(location=coords[0], zoom_start=6)
+    for name, coord in zip(addrs, coords):
+        folium.Marker(coord, popup=name).add_to(m)
+    folium.GeoJson(route).add_to(m)
+    folium_static(m)
