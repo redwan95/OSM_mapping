@@ -4,7 +4,6 @@ from opencage.geocoder import OpenCageGeocode
 import openrouteservice
 import folium
 from streamlit_folium import folium_static
-import us
 
 # --- Load API Keys from Streamlit secrets ---
 OPENCAGE_KEY = st.secrets["OPENCAGE_KEY"]
@@ -14,6 +13,13 @@ EIA_API_KEY = st.secrets["EIA_API_KEY"]
 # --- Initialize clients ---
 geocoder = OpenCageGeocode(OPENCAGE_KEY)
 client = openrouteservice.Client(key=ORS_API_KEY)
+
+# --- US states set ---
+US_STATES = {
+    "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY",
+    "LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND",
+    "OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY"
+}
 
 # --- Functions ---
 def nominatim_search(query):
@@ -28,7 +34,7 @@ def get_coordinates(address):
     return (result[0]['geometry']['lat'], result[0]['geometry']['lng'])
 
 def get_real_time_gas_price(state_abbr):
-    if not us.states.lookup(state_abbr):
+    if state_abbr not in US_STATES:
         return None
     url = f"https://api.eia.gov/v2/petroleum/pri/gnd/data/?api_key={EIA_API_KEY}&frequency=weekly&data[0]=value&facets[state][]={state_abbr}&facets[fuelType][]=Regular&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=1"
     response = requests.get(url)
@@ -42,11 +48,10 @@ def extract_state_abbr(address):
     parts = address.split(",")
     if len(parts) < 2:
         return None
-    last_part = parts[-2].strip()
-    for word in last_part.split():
-        s = us.states.lookup(word)
-        if s:
-            return s.abbr
+    last_part = parts[-2].strip().upper()
+    for abbr in US_STATES:
+        if abbr in last_part:
+            return abbr
     return None
 
 def get_vehicle_mpg(make, model, year):
