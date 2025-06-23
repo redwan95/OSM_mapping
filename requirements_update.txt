@@ -4,4 +4,3 @@ folium
 requests
 openrouteservice
 opencage
-beautifulsoup4
