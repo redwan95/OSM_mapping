@@ -1,6 +1,6 @@
 import streamlit as st
 import requests
-from bs4 import BeautifulSoup
+import re
 from opencage.geocoder import OpenCageGeocode
 import openrouteservice
 import folium
@@ -51,10 +51,14 @@ else:
 
 # Address inputs
 def nominatim_search(query):
+    if not query:
+        return []
     params = {"q": query, "format": "json", "addressdetails": 1, "limit": 5}
     headers = {"User-Agent": "streamlit-app"}
     r = requests.get("https://nominatim.openstreetmap.org/search", params=params, headers=headers)
-    return [res["display_name"] for res in r.json()] if r.status_code == 200 else []
+    if r.status_code == 200:
+        return [res["display_name"] for res in r.json()]
+    return []
 
 start_input = st.text_input("Start Location")
 start_opts = nominatim_search(start_input) if start_input else []
@@ -76,7 +80,9 @@ end = st.selectbox("Select End", options=end_opts) if end_opts else None
 # --- Helper Functions ---
 def get_coordinates(address):
     result = geocoder.geocode(address)
-    return result[0]["geometry"]["lat"], result[0]["geometry"]["lng"]
+    if result:
+        return result[0]["geometry"]["lat"], result[0]["geometry"]["lng"]
+    return None
 
 def extract_state_from_geocode(address):
     try:
@@ -93,17 +99,17 @@ def fetch_aaa_price(state_abbr):
     try:
         url = "https://gasprices.aaa.com/state-gas-price-averages/"
         response = requests.get(url)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        table = soup.find('table')
-        for row in table.find_all('tr')[1:]:
-            cols = row.find_all('td')
-            state = cols[0].text.strip()
-            price = cols[1].text.strip().replace('$', '')
-            if state_abbr in state:
+        if response.status_code != 200:
+            return None
+
+        pattern = re.compile(r'<td>([^<]+)</td>\s*<td>\$([0-9]+\.[0-9]+)</td>')
+        matches = pattern.findall(response.text)
+
+        for state, price in matches:
+            if state_abbr.upper() in state:
                 return float(price)
-    except Exception as e:
-        st.warning(f"AAA price fetch failed for {state_abbr}: {e}")
-    return None
+    except Exception:
+        return None
 
 def get_average_fuel_price(addresses):
     states = []
@@ -125,41 +131,44 @@ if st.button("Calculate Trip") and start and end:
     try:
         addresses = [start] + stops + [end]
         coords = [get_coordinates(addr) for addr in addresses]
-        ors_coords = [(lon, lat) for lat, lon in coords]
-
-        route = client.directions(
-            coordinates=ors_coords,
-            profile='driving-car',
-            format='geojson'
-        )
-
-        summary = route["features"][0]["properties"]["summary"]
-        dist_km = summary["distance"] / 1000
-        dist_mi = dist_km * 0.621371
-        duration_min = summary["duration"] / 60
-        fuel_used = dist_mi / mpg
-
-        avg_price = get_average_fuel_price(addresses)
-        if avg_price:
-            trip_cost = fuel_used * avg_price
+        if None in coords:
+            st.error("Error: Could not get coordinates for one or more locations.")
         else:
-            avg_price = 3.60
-            trip_cost = fuel_used * avg_price
-            st.warning("⚠️ Could not fetch state fuel prices. Using fallback $3.60/gal")
+            ors_coords = [(lon, lat) for lat, lon in coords]
 
-        st.subheader("📊 Trip Summary")
-        st.write(f"**Distance:** {dist_km:.1f} km / {dist_mi:.1f} mi")
-        st.write(f"**Duration:** {duration_min:.1f} minutes")
-        st.write(f"**Fuel Used:** {fuel_used:.2f} gallons")
-        st.write(f"**Average Fuel Price:** ${avg_price:.2f}/gal")
-        st.write(f"**Estimated Trip Cost:** **${trip_cost:.2f}**")
+            route = client.directions(
+                coordinates=ors_coords,
+                profile='driving-car',
+                format='geojson'
+            )
 
-        # Map
-        m = folium.Map(location=coords[0], zoom_start=6)
-        for addr, coord in zip(addresses, coords):
-            folium.Marker(coord, popup=addr).add_to(m)
-        folium.GeoJson(route).add_to(m)
-        folium_static(m)
+            summary = route["features"][0]["properties"]["summary"]
+            dist_km = summary["distance"] / 1000
+            dist_mi = dist_km * 0.621371
+            duration_min = summary["duration"] / 60
+            fuel_used = dist_mi / mpg
+
+            avg_price = get_average_fuel_price(addresses)
+            if avg_price:
+                trip_cost = fuel_used * avg_price
+            else:
+                avg_price = 3.60
+                trip_cost = fuel_used * avg_price
+                st.warning("⚠️ Could not fetch state fuel prices. Using fallback $3.60/gal")
+
+            st.subheader("📊 Trip Summary")
+            st.write(f"**Distance:** {dist_km:.1f} km / {dist_mi:.1f} mi")
+            st.write(f"**Duration:** {duration_min:.1f} minutes")
+            st.write(f"**Fuel Used:** {fuel_used:.2f} gallons")
+            st.write(f"**Average Fuel Price:** ${avg_price:.2f}/gal")
+            st.write(f"**Estimated Trip Cost:** **${trip_cost:.2f}**")
+
+            # Map
+            m = folium.Map(location=coords[0], zoom_start=6)
+            for addr, coord in zip(addresses, coords):
+                folium.Marker(coord, popup=addr).add_to(m)
+            folium.GeoJson(route).add_to(m)
+            folium_static(m)
 
     except Exception as e:
         st.error(f"❌ Error calculating route: {e}")
