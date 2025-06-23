@@ -7,8 +7,8 @@ import folium
 from streamlit_folium import folium_static
 
 # 🔐 API keys from Streamlit secrets
-OPENCAGE_KEY = st.secrets["a873ee32da004add80140142d2219124"]
-ORS_API_KEY = st.secrets["5b3ce3597851110001cf6248647373bbc1684cf2b1da2382c2cdfb0b"]
+OPENCAGE_KEY = st.secrets["OPENCAGE_KEY"]
+ORS_API_KEY = st.secrets["ORS_API_KEY"]
 
 # Clients
 geocoder = OpenCageGeocode(OPENCAGE_KEY)
