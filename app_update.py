@@ -8,18 +8,10 @@ from streamlit_folium import folium_static
 # --- Load API Keys from Streamlit secrets ---
 OPENCAGE_KEY = st.secrets["OPENCAGE_KEY"]
 ORS_API_KEY = st.secrets["ORS_API_KEY"]
-EIA_API_KEY = st.secrets["EIA_API_KEY"]
 
 # --- Initialize clients ---
 geocoder = OpenCageGeocode(OPENCAGE_KEY)
 client = openrouteservice.Client(key=ORS_API_KEY)
-
-# --- US states set ---
-US_STATES = {
-    "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY",
-    "LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND",
-    "OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY"
-}
 
 # --- Functions ---
 def nominatim_search(query):
@@ -33,26 +25,28 @@ def get_coordinates(address):
     result = geocoder.geocode(address)
     return (result[0]['geometry']['lat'], result[0]['geometry']['lng'])
 
-def get_real_time_gas_price(state_abbr):
-    if state_abbr not in US_STATES:
-        return None
-    url = f"https://api.eia.gov/v2/petroleum/pri/gnd/data/?api_key={EIA_API_KEY}&frequency=weekly&data[0]=value&facets[state][]={state_abbr}&facets[fuelType][]=Regular&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=1"
-    response = requests.get(url)
-    if response.status_code == 200:
-        data = response.json()
-        if 'response' in data and 'data' in data['response'] and len(data['response']['data']) > 0:
-            return data['response']['data'][0]['value']
-    return None
+def get_average_gas_price_us():
+    # Try AAA API or EIA API or fallback to static average
+    # Here we use a simple free API for demo; replace with your key/service if needed
 
-def extract_state_abbr(address):
-    parts = address.split(",")
-    if len(parts) < 2:
-        return None
-    last_part = parts[-2].strip().upper()
-    for abbr in US_STATES:
-        if abbr in last_part:
-            return abbr
-    return None
+    # Example: Using AAA Public API (replace YOUR_API_KEY if available)
+    # aaa_api_url = "https://gaspricesapi.aaa.com/api/..."
+
+    # For demonstration, we use EIA weekly average retail gasoline price:
+    eia_api_key = st.secrets.get("EIA_API_KEY", None)
+    if eia_api_key:
+        url = f"https://api.eia.gov/v2/petroleum/pri/gnd/data/?api_key={eia_api_key}&frequency=weekly&data[0]=value&facets[fuelType][]=Regular&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=1"
+        try:
+            response = requests.get(url)
+            if response.status_code == 200:
+                data = response.json()
+                val = data['response']['data'][0]['value']
+                return float(val)
+        except:
+            pass
+
+    # Fallback average price (USD per gallon)
+    return 3.60
 
 def get_vehicle_mpg(make, model, year):
     try:
@@ -74,7 +68,7 @@ def get_vehicle_mpg(make, model, year):
         return None
 
 # --- UI ---
-st.title("Multi-Stop Trip Planner with Real-Time Gas & MPG Lookup")
+st.title("Multi-Stop Trip Planner with Average US Gas Price")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -125,28 +119,13 @@ if st.button("Calculate Route") and start_address and end_address:
 
         fuel_used = distance_miles / mpg if mpg else 0
 
-        # --- Debug output ---
-        st.write(f"Start Address used for state extraction: {start_address}")
-
-        state = extract_state_abbr(start_address)
-        st.write(f"Extracted state abbreviation: {state}")
-
-        # Manual fallback if extraction failed
-        if not state:
-            state = st.selectbox("Select State manually (extraction failed):", sorted(list(US_STATES)))
-
-        gas_price = get_real_time_gas_price(state) if state else None
-
-        if gas_price is None:
-            st.warning(f"Gas price unavailable for state: {state}")
-            trip_cost = 0
-        else:
-            trip_cost = fuel_used * gas_price
+        avg_gas_price = get_average_gas_price_us()
+        trip_cost = fuel_used * avg_gas_price
 
         st.markdown(f"**Distance:** {distance_km:.2f} km / {distance_miles:.2f} miles")
         st.markdown(f"**Duration:** {duration_min:.1f} minutes")
         st.markdown(f"**Fuel Used:** {fuel_used:.2f} gallons")
-        st.markdown(f"**Gas Price in {state}:** ${gas_price:.2f}" if gas_price else "Gas price unavailable")
+        st.markdown(f"**Average US Gas Price:** ${avg_gas_price:.2f} per gallon")
         st.markdown(f"**Estimated Trip Cost:** ${trip_cost:.2f}")
 
         m = folium.Map(location=coords[0], zoom_start=6)
