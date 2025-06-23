@@ -1,6 +1,6 @@
 import streamlit as st
 import requests
-import re
+import re  # standard library, no install needed
 from opencage.geocoder import OpenCageGeocode
 import openrouteservice
 import folium
