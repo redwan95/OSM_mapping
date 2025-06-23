@@ -1,0 +1,6 @@
+streamlit
+opencage
+openrouteservice
+folium
+streamlit-folium
+requests
