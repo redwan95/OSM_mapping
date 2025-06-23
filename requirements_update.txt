@@ -1,6 +1,7 @@
 streamlit
-opencage
-openrouteservice
-folium
 streamlit-folium
+folium
 requests
+openrouteservice
+opencage
+beautifulsoup4
