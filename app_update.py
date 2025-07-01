@@ -1,5 +1,6 @@
 import streamlit as st
 import requests
+from bs4 import BeautifulSoup
 import re
 from opencage.geocoder import OpenCageGeocode
 import openrouteservice
@@ -35,11 +36,17 @@ def nominatim_search(query):
     if not query:
         return []
     params = {"q": query, "format": "json", "addressdetails": 1, "limit": 5}
-    headers = {"User-Agent": "streamlit-app"}
-    r = requests.get("https://nominatim.openstreetmap.org/search", params=params, headers=headers)
-    if r.status_code == 200:
-        return [res["display_name"] for res in r.json()]
-    return []
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    try:
+        r = requests.get("https://nominatim.openstreetmap.org/search", params=params, headers=headers, timeout=10)
+        if r.status_code == 200:
+            return [res["display_name"] for res in r.json()]
+        return []
+    except Exception as e:
+        st.error(f"Error in address search: {e}")
+        return []
 
 # Input locations
 start_input = st.text_input("Start Location")
@@ -67,7 +74,9 @@ def get_coordinates(address):
             lat = results[0]["geometry"]["lat"]
             lng = results[0]["geometry"]["lng"]
             return lat, lng
-    except:
+        return None
+    except Exception as e:
+        st.error(f"Geocoding failed for {address}: {e}")
         return None
 
 # Extract full state name from address
@@ -77,40 +86,54 @@ def extract_full_state_name(address):
         if results:
             components = results[0].get("components", {})
             return components.get("state")
-    except:
+        return None
+    except Exception as e:
+        st.error(f"State extraction failed for {address}: {e}")
         return None
 
-# Scrape AAA fuel price by state and grade
+# Scrape AAA fuel price by state and grade using BeautifulSoup
 def fetch_aaa_fuel_price(full_state_name, grade='Regular'):
     grade_column_map = {
-        "Regular": 1,
-        "Mid-Grade": 2,
-        "Premium": 3,
-        "Diesel": 4
+        "Regular": "regular",
+        "Mid-Grade": "mid",
+        "Premium": "premium",
+        "Diesel": "diesel"
     }
 
     if grade not in grade_column_map:
+        st.error(f"Invalid fuel grade: {grade}")
         return None
 
     try:
         url = "https://gasprices.aaa.com/state-gas-price-averages/"
-        response = requests.get(url, timeout=10)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+        response = requests.get(url, headers=headers, timeout=10)
         if response.status_code != 200:
+            st.error(f"Failed to fetch AAA page: Status {response.status_code}")
             return None
 
-        rows = re.findall(r"<tr>(.*?)</tr>", response.text, re.DOTALL)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        table = soup.find("table")
+        if not table:
+            st.error("Could not find table on AAA page")
+            return None
 
+        rows = table.find_all("tr")[1:]  # Skip header row
         for row in rows:
-            columns = re.findall(r"<td[^>]*>(.*?)</td>", row)
-            if len(columns) < 5:
+            cols = row.find_all("td")
+            if len(cols) < 5:
                 continue
-            state = re.sub(r"<.*?>", "", columns[0]).strip()
+            state = cols[0].text.strip()
             if state.lower() == full_state_name.lower():
-                price_raw = columns[grade_column_map[grade]]
-                price_str = re.sub(r"[^\d.]", "", price_raw)
-                return float(price_str)
+                price_str = cols[list(grade_column_map.keys()).index(grade) + 1].text.strip()
+                price_clean = re.sub(r"[^\d.]", "", price_str)
+                return float(price_clean) if price_clean else None
+        st.warning(f"No fuel price found for state: {full_state_name}")
         return None
-    except:
+    except Exception as e:
+        st.error(f"Error fetching fuel price for {full_state_name}: {e}")
         return None
 
 # Get average fuel price across all states in route
@@ -121,6 +144,10 @@ def get_average_fuel_price(addresses, fuel_grade):
         if state and state not in detected_states:
             detected_states.append(state)
 
+    if not detected_states:
+        st.error("No states detected in the route.")
+        return None
+
     st.write(f"Detected states in route: {detected_states}")
     prices = [fetch_aaa_fuel_price(state, fuel_grade) for state in detected_states]
     prices = [p for p in prices if p is not None]
@@ -128,6 +155,7 @@ def get_average_fuel_price(addresses, fuel_grade):
     if prices:
         return sum(prices) / len(prices)
     else:
+        st.warning("No fuel prices fetched for any state.")
         return None
 
 # Main route logic
