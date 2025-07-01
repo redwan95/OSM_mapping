@@ -1,3 +1,4 @@
+
 import streamlit as st
 import requests
 import re
@@ -107,14 +108,16 @@ def fetch_aaa_regular_price(state_abbr):
         if res.status_code != 200:
             return None
 
-        # Regex to capture table rows: <td>State Name</td><td>$price</td>
-        pattern = re.compile(r'<td>([^<]+)</td>\s*<td>\$([0-9]+\.[0-9]+)</td>')
-        matches = pattern.findall(res.text)
+        rows = re.findall(r"<tr>(.*?)</tr>", res.text, re.DOTALL)
 
-        for state_name, price_str in matches:
-            if state_name.strip() == full_state:
-                return float(price_str)
-
+        for row in rows:
+            # Match full state name in a <td>
+            if f">{full_state}<" in row:
+                cols = re.findall(r"<td[^>]*>(.*?)</td>", row)
+                if len(cols) >= 2:
+                    price_str = cols[1].strip().replace("$", "")
+                    return float(price_str)
+        return None
     except Exception as e:
         return None
 
