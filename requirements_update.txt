@@ -1,7 +1,7 @@
-streamlit==1.38.0
-requests==2.32.3
-beautifulsoup4==4.12.3
-opencage==2.4.0
-openrouteservice==0.9.1
-folium==0.17.0
-streamlit-folium==0.22.0
+streamlit
+requests
+beautifulsoup4
+opencage
+openrouteservice
+folium
+streamlit-folium
