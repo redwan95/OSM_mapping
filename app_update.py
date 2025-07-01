@@ -15,7 +15,7 @@ geocoder = OpenCageGeocode(OPENCAGE_KEY)
 client = openrouteservice.Client(key=ORS_API_KEY)
 
 # --- UI ---
-st.title("🚘 Trip Cost Estimator (with AAA Fuel Prices and Multiple Stops)")
+st.title("🚗 Trip Cost Estimator with Real-Time Fuel Prices")
 
 # Vehicle inputs
 make = st.text_input("Vehicle Make", "Toyota")
@@ -23,12 +23,14 @@ model = st.text_input("Vehicle Model", "Camry")
 year = st.selectbox("Vehicle Year", list(range(2024, 1999, -1)))
 is_ev = st.selectbox("Is this an EV?", ["No", "Yes"])
 
+fuel_grade = st.selectbox("Fuel Grade Type", ["Regular", "Mid-Grade", "Premium", "Diesel"])
+
 if is_ev == "Yes":
-    mpg = 9999  # Assume effectively no fuel cost for EVs
+    mpg = 9999  # Simulate EV usage with effectively infinite MPG
 else:
     mpg = st.number_input("Vehicle MPG (miles per gallon)", min_value=5.0, value=25.0)
 
-# Search utility
+# Autocomplete address helper
 def nominatim_search(query):
     if not query:
         return []
@@ -39,7 +41,7 @@ def nominatim_search(query):
         return [res["display_name"] for res in r.json()]
     return []
 
-# Inputs for locations
+# Input locations
 start_input = st.text_input("Start Location")
 start_opts = nominatim_search(start_input) if start_input else []
 start = st.selectbox("Select Start Location", options=start_opts) if start_opts else None
@@ -57,7 +59,7 @@ end_input = st.text_input("End Location")
 end_opts = nominatim_search(end_input) if end_input else []
 end = st.selectbox("Select End Location", options=end_opts) if end_opts else None
 
-# --- Geocoding & Fuel Price ---
+# Geocode to lat/lon
 def get_coordinates(address):
     try:
         results = geocoder.geocode(address)
@@ -68,6 +70,7 @@ def get_coordinates(address):
     except:
         return None
 
+# Extract full state name from address
 def extract_full_state_name(address):
     try:
         results = geocoder.geocode(address)
@@ -77,10 +80,18 @@ def extract_full_state_name(address):
     except:
         return None
 
-def fetch_aaa_regular_price(full_state_name):
-    """
-    Scrapes Regular fuel price from AAA using full state name.
-    """
+# Scrape AAA fuel price by state and grade
+def fetch_aaa_fuel_price(full_state_name, grade='Regular'):
+    grade_column_map = {
+        "Regular": 1,
+        "Mid-Grade": 2,
+        "Premium": 3,
+        "Diesel": 4
+    }
+
+    if grade not in grade_column_map:
+        return None
+
     try:
         url = "https://gasprices.aaa.com/state-gas-price-averages/"
         response = requests.get(url, timeout=10)
@@ -91,17 +102,19 @@ def fetch_aaa_regular_price(full_state_name):
 
         for row in rows:
             columns = re.findall(r"<td[^>]*>(.*?)</td>", row)
-            if not columns:
+            if len(columns) < 5:
                 continue
             state = re.sub(r"<.*?>", "", columns[0]).strip()
             if state.lower() == full_state_name.lower():
-                price_str = re.sub(r"[^\d.]", "", columns[1])
+                price_raw = columns[grade_column_map[grade]]
+                price_str = re.sub(r"[^\d.]", "", price_raw)
                 return float(price_str)
         return None
     except:
         return None
 
-def get_average_fuel_price(addresses):
+# Get average fuel price across all states in route
+def get_average_fuel_price(addresses, fuel_grade):
     detected_states = []
     for addr in addresses:
         state = extract_full_state_name(addr)
@@ -109,7 +122,7 @@ def get_average_fuel_price(addresses):
             detected_states.append(state)
 
     st.write(f"Detected states in route: {detected_states}")
-    prices = [fetch_aaa_regular_price(state) for state in detected_states]
+    prices = [fetch_aaa_fuel_price(state, fuel_grade) for state in detected_states]
     prices = [p for p in prices if p is not None]
 
     if prices:
@@ -117,13 +130,13 @@ def get_average_fuel_price(addresses):
     else:
         return None
 
-# --- Route Calculation ---
+# Main route logic
 if st.button("Calculate Trip") and start and end:
     all_addresses = [start] + stops + [end]
     coords = [get_coordinates(addr) for addr in all_addresses]
 
     if None in coords:
-        st.error("Could not geocode one or more locations.")
+        st.error("❌ Could not geocode one or more locations.")
     else:
         ors_coords = [(lng, lat) for lat, lng in coords]
 
@@ -140,7 +153,7 @@ if st.button("Calculate Trip") and start and end:
             duration_min = summary["duration"] / 60
             fuel_used = dist_miles / mpg if mpg else 0
 
-            avg_price = get_average_fuel_price(all_addresses)
+            avg_price = get_average_fuel_price(all_addresses, fuel_grade)
             if avg_price:
                 trip_cost = fuel_used * avg_price
             else:
@@ -148,12 +161,13 @@ if st.button("Calculate Trip") and start and end:
                 trip_cost = fuel_used * avg_price
                 st.warning("⚠️ Could not fetch fuel prices. Using fallback $3.60/gal.")
 
-            # Summary
+            # Show summary
             st.subheader("📊 Trip Summary")
             st.write(f"Distance: {dist_km:.2f} km / {dist_miles:.2f} miles")
             st.write(f"Duration: {duration_min:.1f} minutes")
             st.write(f"Fuel Used: {fuel_used:.2f} gallons")
-            st.write(f"Avg. Gas Price: ${avg_price:.2f} per gallon")
+            st.write(f"Fuel Grade: {fuel_grade}")
+            st.write(f"Avg. Fuel Price: ${avg_price:.2f} per gallon")
             st.write(f"Estimated Trip Cost: ${trip_cost:.2f}")
 
             # Map
