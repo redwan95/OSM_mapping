@@ -5,7 +5,6 @@ from opencage.geocoder import OpenCageGeocode
 import openrouteservice
 import folium
 from streamlit_folium import folium_static
-from bs4 import BeautifulSoup
 
 # --- API KEYS ---
 OPENCAGE_KEY = st.secrets["OPENCAGE_KEY"]
@@ -77,33 +76,41 @@ def extract_full_state_name(address):
     except:
         return None
 
-# --- Scrape AAA Fuel Prices ---
+# --- Scrape AAA Fuel Prices (Regex Only, No BeautifulSoup) ---
 def fetch_aaa_fuel_price(state_name, grade="Regular"):
     """
-    Scrapes AAA's state average fuel prices.
+    Scrapes AAA's state average fuel prices using regex only (no BeautifulSoup).
     """
-    grade_map = {"Regular":1, "Mid-Grade":2, "Premium":3, "Diesel":4}
-    col = grade_map.get(grade)
-    if col is None:
+    grade_column_map = {
+        "Regular": 1,
+        "Mid-Grade": 2,
+        "Premium": 3,
+        "Diesel": 4
+    }
+    col_idx = grade_column_map.get(grade)
+    if col_idx is None:
         return None
+
     try:
         url = "https://gasprices.aaa.com/state-gas-price-averages/"
         headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(url, headers=headers, timeout=10)
-        if r.status_code != 200:
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code != 200:
             return None
-        soup = BeautifulSoup(r.text, "html.parser")
-        rows = soup.select("table tbody tr")
-        for tr in rows:
-            tds = tr.find_all("td")
-            if not tds:
-                continue
-            state = tds[0].get_text(strip=True)
-            if state.lower() == state_name.lower():
-                price_text = tds[col].get_text(strip=True).replace("$", "")
-                return float(price_text)
+
+        # Find all table rows
+        rows = re.findall(r"<tr>(.*?)</tr>", response.text, re.DOTALL)
+        for row in rows:
+            # Extract column values
+            cols = re.findall(r"<td[^>]*>(.*?)</td>", row, re.DOTALL)
+            if len(cols) >= 5:
+                state = re.sub(r"<.*?>", "", cols[0]).strip()
+                if state.lower() == state_name.lower():
+                    price_text = re.sub(r"[^\d.]", "", cols[col_idx])
+                    return float(price_text)
         return None
-    except:
+    except Exception as e:
+        print(f"Scraping failed: {e}")
         return None
 
 # --- Aggregate Fuel Prices ---
