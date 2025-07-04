@@ -5,6 +5,7 @@ from opencage.geocoder import OpenCageGeocode
 import openrouteservice
 import folium
 from streamlit_folium import folium_static
+from bs4 import BeautifulSoup
 
 # --- API KEYS ---
 OPENCAGE_KEY = st.secrets["OPENCAGE_KEY"]
@@ -76,43 +77,36 @@ def extract_full_state_name(address):
     except:
         return None
 
-# --- Scrape AAA Gas Prices ---
-def fetch_aaa_fuel_price(full_state_name, grade='Regular'):
+# --- Scrape AAA Fuel Prices ---
+def fetch_aaa_fuel_price(state_name, grade="Regular"):
     """
-    Scrapes AAA gas price for a state and fuel grade.
+    Scrapes AAA's state average fuel prices.
     """
-    grade_column_map = {
-        "Regular": 1,
-        "Mid-Grade": 2,
-        "Premium": 3,
-        "Diesel": 4
-    }
-
-    if grade not in grade_column_map:
+    grade_map = {"Regular":1, "Mid-Grade":2, "Premium":3, "Diesel":4}
+    col = grade_map.get(grade)
+    if col is None:
         return None
-
     try:
         url = "https://gasprices.aaa.com/state-gas-price-averages/"
-        response = requests.get(url, timeout=10)
-        if response.status_code != 200:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code != 200:
             return None
-
-        rows = re.findall(r"<tr>(.*?)</tr>", response.text, re.DOTALL)
-
-        for row in rows:
-            columns = re.findall(r"<td[^>]*>(.*?)</td>", row)
-            if len(columns) < 5:
+        soup = BeautifulSoup(r.text, "html.parser")
+        rows = soup.select("table tbody tr")
+        for tr in rows:
+            tds = tr.find_all("td")
+            if not tds:
                 continue
-            state = re.sub(r"<.*?>", "", columns[0]).strip()
-            if state.lower() == full_state_name.lower():
-                price_raw = columns[grade_column_map[grade]]
-                price_str = re.sub(r"[^\d.]", "", price_raw)
-                return float(price_str)
-
+            state = tds[0].get_text(strip=True)
+            if state.lower() == state_name.lower():
+                price_text = tds[col].get_text(strip=True).replace("$", "")
+                return float(price_text)
         return None
     except:
         return None
 
+# --- Aggregate Fuel Prices ---
 def get_average_fuel_price(addresses, fuel_grade):
     detected_states = []
     for addr in addresses:
